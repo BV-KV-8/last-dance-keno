@@ -164,6 +164,54 @@ Keno uses an 8-row × 10-column board (numbers 1-80):
 
 MIT
 
+## Interactive Dashboard
+
+A modern Next.js dashboard for real-time strategy testing and backtesting.
+
+### Dashboard Features
+- **Real-time Backtesting** - Test strategies instantly against 1000+ historical games
+- **Custom Strategy Builder** - Build your own filters with sliders and checkboxes
+- **6 Color Themes** - Default, Midnight, Sunset, Forest, Ocean, Purple
+- **Multiple Filter Types:**
+  - Hit in Last X Games (with slider)
+  - Hit X+ Times in Y Games (adjustable both values)
+  - Must Have Hit in Last X Games
+  - Custom Game Range (individual checkboxes for each game)
+  - Pattern 1-3-4 Elimination
+  - Hot Row/Col Threshold
+  - Neighbor Hit Requirement
+
+### Dashboard Installation
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+Visit http://localhost:3000
+
+### Dashboard Usage
+1. **Select Theme** - Choose your preferred color scheme
+2. **Toggle Filters** - Enable/disable elimination rules with switches
+3. **Adjust Parameters** - Use sliders to fine-tune filter values
+4. **Custom Range** - Check individual games to include/exclude from analysis
+5. **View Results** - See playable numbers, hit rates, and backtest stats in real-time
+
+### Dashboard Views
+- **Prediction** - Shows playable numbers highlighted on the board
+- **Heatmap** - Visualizes frequency of hits in last 20 games
+- **Last Game** - Shows the most recent draw
+
+## Color Themes
+
+| Theme | Description |
+|-------|-------------|
+| Default | Clean light theme with blue accents |
+| Midnight | Dark theme with indigo accents |
+| Sunset | Warm orange theme |
+| Forest | Dark green theme |
+| Ocean | Dark cyan theme |
+| Purple | Dark purple theme |
+
 ## Contributing
 
 Contributions welcome! This is the "last dance" keno system - refined over many iterations.
