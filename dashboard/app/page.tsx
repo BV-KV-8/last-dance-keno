@@ -243,6 +243,13 @@ export default function Home() {
   const [addFilterOpen, setAddFilterOpen] = useState(false);
   const [configFilterOpen, setConfigFilterOpen] = useState<string | null>(null);
   const [editableFilter, setEditableFilter] = useState<FilterConfig | null>(null);
+  const [autoConfigRunning, setAutoConfigRunning] = useState(false);
+  const [autoConfigProgress, setAutoConfigProgress] = useState('');
+  const [autoConfigResults, setAutoConfigResults] = useState<{
+    bestScore: number;
+    bestConfig: FilterConfig[];
+    summary: string;
+  } | null>(null);
 
   // Load games
   useEffect(() => {
@@ -303,6 +310,221 @@ export default function Home() {
 
   const currentTheme = THEMES[theme];
   const numberFreq = useMemo(() => games.length > 0 ? getNumberFrequency(games) : {}, [games]);
+
+  // Helper: Test a specific filter config and return score
+  const testConfig = (testFilters: FilterConfig[], gamesToTest: number) => {
+    const rules: FilterRule[] = testFilters.map((f) => ({
+      id: f.id,
+      name: f.name,
+      type: f.category === 'hit' ? 'hit_range' : f.category === 'position' ? 'position' : f.category === 'rowcol' ? 'row_col' : f.category === 'neighbor' ? 'neighbor' : 'custom',
+      enabled: f.enabled,
+      params: f.params,
+    }));
+
+    let totalHits = 0;
+    let totalExtras = 0; // Numbers kept but didn't hit
+
+    for (let i = 1; i <= gamesToTest; i++) {
+      const predictionGames = games.slice(i);
+      const targetGame = games[i - 1];
+
+      const playable = applyFilters(predictionGames, rules, maxNumbers);
+      const playableSet = new Set(playable);
+
+      const hits = targetGame.numbers.filter((num) => playableSet.has(num)).length;
+      totalHits += hits;
+      totalExtras += playable.length - hits;
+    }
+
+    const avgHits = totalHits / gamesToTest;
+    const avgExtras = totalExtras / gamesToTest;
+
+    // Score: Maximize hits, minimize extras
+    // Weight hits higher (2x) than penalty for extras
+    return {
+      score: avgHits * 2 - avgExtras * 0.5,
+      avgHits,
+      avgExtras,
+    };
+  };
+
+  // Auto-Config: Find optimal settings
+  const runAutoConfig = async () => {
+    setAutoConfigRunning(true);
+    setAutoConfigProgress('Initializing auto-config...');
+    setAutoConfigResults(null);
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    try {
+      const gamesToTest = Math.min(200, games.length - 1);
+      let bestScore = -Infinity;
+      let bestConfig: FilterConfig[] = [];
+      const iterations: number[] = [];
+
+      // Optimization strategies to test
+      const strategies = [
+        { name: 'Conservative (few eliminations)', targetExtras: 10 },
+        { name: 'Balanced', targetExtras: 15 },
+        { name: 'Aggressive (max eliminations)', targetExtras: 25 },
+      ];
+
+      // Test each strategy
+      for (const strategy of strategies) {
+        setAutoConfigProgress(`Testing ${strategy.name}...`);
+
+        // Generate variations of hit-based filters
+        const hitVariations = [
+          { lastCount: 1, name: 'Last 1' },
+          { lastCount: 2, name: 'Last 2' },
+          { lastCount: 3, name: 'Last 3' },
+          { lastCount: 5, name: 'Last 5' },
+        ];
+
+        const hitCountVariations = [
+          { hitCount: 2, inGames: 3, name: '2+ in 3' },
+          { hitCount: 3, inGames: 5, name: '3+ in 5' },
+          { hitCount: 4, inGames: 8, name: '4+ in 8' },
+          { hitCount: 2, inGames: 5, name: '2+ in 5' },
+        ];
+
+        // Test combinations
+        for (const hv of hitVariations) {
+          for (const hcv of hitCountVariations) {
+            setAutoConfigProgress(`Testing: ${hv.name} + ${hcv.name}...`);
+
+            const testFilters: FilterConfig[] = [
+              {
+                id: 'auto_hit_last',
+                name: `Hit in Last ${hv.lastCount}`,
+                category: 'hit',
+                enabled: true,
+                params: { lastCount: hv.lastCount, eliminate: true },
+              },
+              {
+                id: 'auto_hit_count',
+                name: `Hit ${hcv.hitCount}+ in ${hcv.inGames}`,
+                category: 'hit',
+                enabled: true,
+                params: { hitCount: hcv.hitCount, inGames: hcv.inGames, eliminateIfHit: true },
+              },
+            ];
+
+            const result = testConfig(testFilters, gamesToTest);
+            iterations.push(result.score);
+
+            if (result.score > bestScore && result.avgExtras < strategy.targetExtras) {
+              bestScore = result.score;
+              bestConfig = testFilters;
+            }
+          }
+        }
+
+        // Test with neighbor filter
+        setAutoConfigProgress('Testing with neighbor filter...');
+        const neighborVariations = bestConfig.length > 0 ? [...bestConfig] : [{
+          id: 'auto_hit_base',
+          name: 'Hit in Last 2',
+          category: 'hit',
+          enabled: true,
+          params: { lastCount: 2, eliminate: true },
+        }];
+
+        const withNeighbor: FilterConfig[] = [
+          ...neighborVariations,
+          {
+            id: 'auto_neighbor',
+            name: 'Neighbor Hit Required',
+            category: 'neighbor',
+            enabled: true,
+            params: { requireNeighborHit: true },
+          },
+        ];
+
+        const neighborResult = testConfig(withNeighbor, gamesToTest);
+        if (neighborResult.score > bestScore) {
+          bestScore = neighborResult.score;
+          bestConfig = withNeighbor;
+        }
+
+        // Test with position eliminations
+        for (const pos of [1, 2, 3, 4, 5]) {
+          const withPos: FilterConfig[] = [
+            ...neighborVariations,
+            {
+              id: `auto_pos_${pos}`,
+              name: `Position #${pos}`,
+              category: 'position',
+              enabled: true,
+              params: { positions: [pos] },
+            },
+          ];
+
+          const posResult = testConfig(withPos, gamesToTest);
+          if (posResult.score > bestScore) {
+            bestScore = posResult.score;
+            bestConfig = withPos;
+          }
+        }
+
+        // Small delay to prevent UI freeze
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+
+      // If no good config found, use a default balanced one
+      if (bestConfig.length === 0) {
+        bestConfig = [
+          {
+            id: 'auto_default1',
+            name: 'Hit in Last 2',
+            category: 'hit',
+            enabled: true,
+            params: { lastCount: 2, eliminate: true },
+          },
+          {
+            id: 'auto_default2',
+            name: 'Hit 2+ in Last 5',
+            category: 'hit',
+            enabled: true,
+            params: { hitCount: 2, inGames: 5, eliminateIfHit: true },
+          },
+        ];
+        const defaultResult = testConfig(bestConfig, gamesToTest);
+        bestScore = defaultResult.score;
+      }
+
+      // Format summary
+      const finalResult = testConfig(bestConfig, gamesToTest);
+      const summary = `Best configuration found: ${bestConfig.map(f => f.name).join(', ')}\n` +
+        `Expected: ${finalResult.avgHits.toFixed(2)} hits/game, ${finalResult.avgExtras.toFixed(2)} extras/game\n` +
+        `Score: ${bestScore.toFixed(2)} (higher is better)`;
+
+      setAutoConfigResults({
+        bestScore,
+        bestConfig,
+        summary,
+      });
+
+      // Auto-apply to custom filters
+      setCustomFilters(bestConfig);
+      setSelectedStrategy('custom');
+
+      setAutoConfigProgress('Complete!');
+    } catch (error) {
+      setAutoConfigProgress(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+
+    setAutoConfigRunning(false);
+  };
+
+  // Apply auto-config results
+  const applyAutoConfig = () => {
+    if (autoConfigResults) {
+      setCustomFilters(autoConfigResults.bestConfig);
+      setSelectedStrategy('custom');
+      setAutoConfigResults(null);
+    }
+  };
 
   // Run detailed analysis
   const runAnalysis = async () => {
@@ -782,6 +1004,25 @@ export default function Home() {
             </div>
 
             <Button
+              onClick={runAutoConfig}
+              disabled={autoConfigRunning}
+              variant="outline"
+              className="mt-4 border-purple-500 text-purple-400 hover:bg-purple-500/20"
+            >
+              {autoConfigRunning ? (
+                <>
+                  <RefreshCwIcon className="w-4 h-4 mr-2 animate-spin" />
+                  {autoConfigProgress || 'Auto-Config...'}
+                </>
+              ) : (
+                <>
+                  <TrendingUpIcon className="w-4 h-4 mr-2" />
+                  Auto-Config
+                </>
+              )}
+            </Button>
+
+            <Button
               onClick={runAnalysis}
               disabled={running}
               className="mt-4 bg-green-600 hover:bg-green-700"
@@ -799,6 +1040,39 @@ export default function Home() {
               )}
             </Button>
           </div>
+
+          {/* Auto-Config Results */}
+          {autoConfigResults && (
+            <div className={`mt-4 p-4 rounded-lg ${currentTheme.card} ${currentTheme.border} border`}>
+              <div className="flex justify-between items-start mb-3">
+                <div>
+                  <h3 className="font-semibold text-green-400 flex items-center gap-2">
+                    <CheckIcon className="w-4 h-4" />
+                    Auto-Config Complete!
+                  </h3>
+                  <p className={`text-sm ${currentTheme.muted} mt-1`}>Score: {autoConfigResults.bestScore.toFixed(2)}</p>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setAutoConfigResults(null)}>
+                    Dismiss
+                  </Button>
+                  <Button size="sm" onClick={applyAutoConfig}>
+                    Apply & Test
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className={`text-sm ${currentTheme.muted}`}>Best Filters Found:</div>
+                <div className="flex flex-wrap gap-2">
+                  {autoConfigResults.bestConfig.map((f) => (
+                    <Badge key={f.id} variant="secondary" className={`${currentTheme.card} ${currentTheme.border} border`}>
+                      {f.name}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
