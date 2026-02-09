@@ -535,7 +535,7 @@ export default function Home() {
 
         // Test with neighbor filter
         setAutoConfigProgress('Testing with neighbor filter...');
-        const neighborVariations = bestConfig.length > 0 ? [...bestConfig] : [{
+        const neighborVariations: FilterConfig[] = bestConfig.length > 0 ? [...bestConfig] : [{
           id: 'auto_hit_base',
           name: 'Hit in Last 2',
           category: 'hit',
@@ -850,21 +850,6 @@ export default function Home() {
     }
   };
 
-  // Load Pocket Profile (just strategy + filter states)
-  const loadPocketProfile = (profile: PocketProfile) => {
-    setSelectedStrategy(profile.strategy);
-
-    // Apply filter states to custom filters
-    if (profile.strategy === 'custom') {
-      setCustomFilters(prev => prev.map(f => ({
-        ...f,
-        enabled: profile.filterStates[f.id] ?? f.enabled,
-      })));
-    }
-
-    setLoadDialogOpen(false);
-  };
-
   // Delete profile
   const deleteMasterProfile = (name: string) => {
     const updated = masterProfiles.filter(p => p.name !== name);
@@ -1084,28 +1069,8 @@ export default function Home() {
         percentiles: [],
         crossStrategyPercentiles: [],
       };
-      setRunResults(errorResults);
+      setRunResults(errorResults as DetailedStats);
       setLastRunData(errorResults);
-    }
-
-    setRunning(false);
-  };
-
-  // Update filter
-        totalGames: 0,
-        errors: true,
-        errorMessage: error instanceof Error ? error.message : 'Unknown error',
-        playableCount: 0,
-        eliminatedCount: 0,
-        perFilterStats: [],
-        totalHits: 0,
-        totalMisses: 0,
-        avgHitsPerGame: 0,
-        spotCounts: { tenSpot: 0, eightSpot: 0, fiveSpot: 0, threeSpot: 0 },
-        remainingFilteredNoHit: 0,
-        percentiles: [],
-        crossStrategyPercentiles: [],
-      });
     }
 
     setRunning(false);
@@ -1819,7 +1784,7 @@ export default function Home() {
                             size="sm"
                             variant="ghost"
                             onClick={() => {
-                              setEditableFilter(filter);
+                              setEditableFilter(filter as FilterConfig);
                               setConfigFilterOpen(filter.id);
                             }}
                           >
@@ -2093,7 +2058,7 @@ export default function Home() {
 
       {/* Filter Config Dialog */}
       {configFilterOpen && editableFilter && (
-        <Dialog open={!!configFilterOpen} onOpenChange={setConfigFilterOpen}>
+        <Dialog open={!!configFilterOpen} onOpenChange={(open) => setConfigFilterOpen(open ? configFilterOpen : null)}>
           <FilterConfigDialog filter={editableFilter} />
         </Dialog>
       )}
