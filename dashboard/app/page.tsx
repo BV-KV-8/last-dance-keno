@@ -25,7 +25,7 @@ import {
   mirrorNum,
   getNumberFrequency,
 } from '@/lib/keno';
-import { RefreshCwIcon, PlayIcon, BarChart3Icon, SettingsIcon, TargetIcon, PlusIcon, XIcon, CheckIcon, TrendingUpIcon, FilterIcon } from 'lucide-react';
+import { RefreshCwIcon, PlayIcon, BarChart3Icon, SettingsIcon, TargetIcon, PlusIcon, XIcon, CheckIcon, TrendingUpIcon, FilterIcon, SaveIcon, FolderOpenIcon, DownloadIcon, UploadIcon, TrashIcon } from 'lucide-react';
 
 type Theme = 'midnight' | 'ocean' | 'forest' | 'purple' | 'rose' | 'amber' | 'default';
 
@@ -231,6 +231,22 @@ interface DetailedStats {
   }[];
 }
 
+interface MasterProfile {
+  name: string;
+  theme: Theme;
+  strategy: string;
+  customFilters: FilterConfig[];
+  maxNumbers: number;
+  createdAt: string;
+}
+
+interface PocketProfile {
+  name: string;
+  strategy: string;
+  filterStates: Record<string, boolean>; // Just filter on/off states
+  createdAt: string;
+}
+
 export default function Home() {
   const [games, setGames] = useState<Game[]>([]);
   const [loading, setLoading] = useState(true);
@@ -250,6 +266,25 @@ export default function Home() {
     bestConfig: FilterConfig[];
     summary: string;
   } | null>(null);
+
+  // Profile management state
+  const [masterProfiles, setMasterProfiles] = useState<MasterProfile[]>([]);
+  const [pocketProfiles, setPocketProfiles] = useState<PocketProfile[]>([]);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [loadDialogOpen, setLoadDialogOpen] = useState(false);
+  const [profileName, setProfileName] = useState('');
+
+  // Load profiles from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedMaster = localStorage.getItem('keno_master_profiles');
+      const savedPocket = localStorage.getItem('keno_pocket_profiles');
+      if (savedMaster) setMasterProfiles(JSON.parse(savedMaster));
+      if (savedPocket) setPocketProfiles(JSON.parse(savedPocket));
+    } catch (e) {
+      console.error('Failed to load profiles', e);
+    }
+  }, []);
 
   // Load games
   useEffect(() => {
@@ -524,6 +559,136 @@ export default function Home() {
       setSelectedStrategy('custom');
       setAutoConfigResults(null);
     }
+  };
+
+  // Save Master Profile (entire page state)
+  const saveMasterProfile = (name: string) => {
+    const profile: MasterProfile = {
+      name,
+      theme,
+      strategy: selectedStrategy,
+      customFilters,
+      maxNumbers,
+      createdAt: new Date().toISOString(),
+    };
+
+    const updated = [...masterProfiles.filter(p => p.name !== name), profile];
+    setMasterProfiles(updated);
+    localStorage.setItem('keno_master_profiles', JSON.stringify(updated));
+    setSaveDialogOpen(false);
+    setProfileName('');
+  };
+
+  // Save Pocket Profile (just strategy + filter states)
+  const savePocketProfile = (name: string) => {
+    // Get current filter states
+    const filterStates: Record<string, boolean> = {};
+    currentFilters.forEach(f => {
+      filterStates[f.id] = f.enabled;
+    });
+
+    const profile: PocketProfile = {
+      name,
+      strategy: selectedStrategy,
+      filterStates,
+      createdAt: new Date().toISOString(),
+    };
+
+    const updated = [...pocketProfiles.filter(p => p.name !== name), profile];
+    setPocketProfiles(updated);
+    localStorage.setItem('keno_pocket_profiles', JSON.stringify(updated));
+    setSaveDialogOpen(false);
+    setProfileName('');
+  };
+
+  // Load Master Profile
+  const loadMasterProfile = (profile: MasterProfile) => {
+    setTheme(profile.theme);
+    setSelectedStrategy(profile.strategy);
+    setCustomFilters(profile.customFilters);
+    setMaxNumbers(profile.maxNumbers);
+    setLoadDialogOpen(false);
+  };
+
+  // Load Pocket Profile (just strategy + filter states)
+  const loadPocketProfile = (profile: PocketProfile) => {
+    setSelectedStrategy(profile.strategy);
+
+    // Apply filter states to custom filters
+    if (profile.strategy === 'custom') {
+      setCustomFilters(prev => prev.map(f => ({
+        ...f,
+        enabled: profile.filterStates[f.id] ?? f.enabled,
+      })));
+    }
+
+    setLoadDialogOpen(false);
+  };
+
+  // Delete profile
+  const deleteMasterProfile = (name: string) => {
+    const updated = masterProfiles.filter(p => p.name !== name);
+    setMasterProfiles(updated);
+    localStorage.setItem('keno_master_profiles', JSON.stringify(updated));
+  };
+
+  const deletePocketProfile = (name: string) => {
+    const updated = pocketProfiles.filter(p => p.name !== name);
+    setPocketProfiles(updated);
+    localStorage.setItem('keno_pocket_profiles', JSON.stringify(updated));
+  };
+
+  // Export profile as JSON
+  const exportProfile = (profile: MasterProfile | PocketProfile, type: 'master' | 'pocket') => {
+    const data = JSON.stringify(profile, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `keno_${type}_${profile.name}_${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Import profile from JSON
+  const importProfile = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const data = JSON.parse(e.target?.result as string);
+            if (data.customFilters !== undefined) {
+              // Master profile
+              const profile: MasterProfile = {
+                ...data,
+                createdAt: data.createdAt || new Date().toISOString(),
+              };
+              const updated = [...masterProfiles.filter(p => p.name !== profile.name), profile];
+              setMasterProfiles(updated);
+              localStorage.setItem('keno_master_profiles', JSON.stringify(updated));
+            } else {
+              // Pocket profile
+              const profile: PocketProfile = {
+                ...data,
+                createdAt: data.createdAt || new Date().toISOString(),
+              };
+              const updated = [...pocketProfiles.filter(p => p.name !== profile.name), profile];
+              setPocketProfiles(updated);
+              localStorage.setItem('keno_pocket_profiles', JSON.stringify(updated));
+            }
+          } catch (err) {
+            alert('Invalid profile file');
+          }
+        };
+        reader.readAsText(file);
+      }
+    };
+    input.click();
   };
 
   // Run detailed analysis
@@ -1039,6 +1204,136 @@ export default function Home() {
                 </>
               )}
             </Button>
+
+            <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" className="mt-4 border-amber-500 text-amber-400 hover:bg-amber-500/20">
+                  <SaveIcon className="w-4 h-4 mr-2" />
+                  Save Profile
+                </Button>
+              </DialogTrigger>
+              <DialogContent className={`${currentTheme.card} ${currentTheme.border} border`}>
+                <DialogHeader>
+                  <DialogTitle>Save Profile</DialogTitle>
+                  <DialogDescription>Save your current configuration</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div>
+                    <Label>Profile Name</Label>
+                    <Input
+                      value={profileName}
+                      onChange={(e) => setProfileName(e.target.value)}
+                      placeholder="My Awesome Strategy"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Button
+                      onClick={() => profileName && saveMasterProfile(profileName)}
+                      disabled={!profileName}
+                      className="bg-blue-600 hover:bg-blue-700"
+                    >
+                      <SaveIcon className="w-4 h-4 mr-2" />
+                      Master Profile
+                    </Button>
+                    <Button
+                      onClick={() => profileName && savePocketProfile(profileName)}
+                      disabled={!profileName}
+                      variant="outline"
+                    >
+                      <SaveIcon className="w-4 h-4 mr-2" />
+                      Pocket Profile
+                    </Button>
+                  </div>
+                  <div className={`text-sm ${currentTheme.muted} space-y-1`}>
+                    <p><strong>Master Profile:</strong> Saves everything (theme, strategy, filters, max numbers)</p>
+                    <p><strong>Pocket Profile:</strong> Saves just the strategy and filter on/off states</p>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog open={loadDialogOpen} onOpenChange={setLoadDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" className="mt-4 border-cyan-500 text-cyan-400 hover:bg-cyan-500/20">
+                  <FolderOpenIcon className="w-4 h-4 mr-2" />
+                  Load Profile
+                </Button>
+              </DialogTrigger>
+              <DialogContent className={`${currentTheme.card} ${currentTheme.border} border max-w-2xl`}>
+                <DialogHeader>
+                  <DialogTitle>Load Profile</DialogTitle>
+                  <DialogDescription>Choose a saved profile to load</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="flex justify-between items-center">
+                    <Button onClick={importProfile} variant="outline" size="sm">
+                      <UploadIcon className="w-4 h-4 mr-2" />
+                      Import from File
+                    </Button>
+                    <span className={`text-sm ${currentTheme.muted}`}>
+                      {masterProfiles.length} master, {pocketProfiles.length} pocket profiles saved
+                    </span>
+                  </div>
+
+                  <Tabs defaultValue="master">
+                    <TabsList>
+                      <TabsTrigger value="master">Master Profiles ({masterProfiles.length})</TabsTrigger>
+                      <TabsTrigger value="pocket">Pocket Profiles ({pocketProfiles.length})</TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="master" className="space-y-2 mt-2">
+                      {masterProfiles.length === 0 ? (
+                        <p className={`text-center py-8 ${currentTheme.muted}`}>No master profiles saved</p>
+                      ) : (
+                        masterProfiles.map((profile) => (
+                          <div key={profile.name} className={`p-3 rounded-lg ${currentTheme.border} border flex justify-between items-center`}>
+                            <div>
+                              <div className="font-medium">{profile.name}</div>
+                              <div className={`text-xs ${currentTheme.muted}`}>
+                                {STRATEGIES[profile.strategy]?.name || profile.strategy} • Max: {profile.maxNumbers} • {profile.theme}
+                              </div>
+                            </div>
+                            <div className="flex gap-1">
+                              <Button size="sm" variant="outline" onClick={() => loadMasterProfile(profile)}>Load</Button>
+                              <Button size="sm" variant="outline" onClick={() => exportProfile(profile, 'master')}>
+                                <DownloadIcon className="w-3 h-3" />
+                              </Button>
+                              <Button size="sm" variant="ghost" onClick={() => deleteMasterProfile(profile.name)}>
+                                <TrashIcon className="w-3 h-3 text-red-400" />
+                              </Button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </TabsContent>
+                    <TabsContent value="pocket" className="space-y-2 mt-2">
+                      {pocketProfiles.length === 0 ? (
+                        <p className={`text-center py-8 ${currentTheme.muted}`}>No pocket profiles saved</p>
+                      ) : (
+                        pocketProfiles.map((profile) => (
+                          <div key={profile.name} className={`p-3 rounded-lg ${currentTheme.border} border flex justify-between items-center`}>
+                            <div>
+                              <div className="font-medium">{profile.name}</div>
+                              <div className={`text-xs ${currentTheme.muted}`}>
+                                {STRATEGIES[profile.strategy]?.name || profile.strategy} • {Object.keys(profile.filterStates).length} filters
+                              </div>
+                            </div>
+                            <div className="flex gap-1">
+                              <Button size="sm" variant="outline" onClick={() => loadPocketProfile(profile)}>Load</Button>
+                              <Button size="sm" variant="outline" onClick={() => exportProfile(profile, 'pocket')}>
+                                <DownloadIcon className="w-3 h-3" />
+                              </Button>
+                              <Button size="sm" variant="ghost" onClick={() => deletePocketProfile(profile.name)}>
+                                <TrashIcon className="w-3 h-3 text-red-400" />
+                              </Button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </TabsContent>
+                  </Tabs>
+                </div>
+              </DialogContent>
+            </Dialog>
           </div>
 
           {/* Auto-Config Results */}
