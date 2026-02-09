@@ -274,6 +274,14 @@ export default function Home() {
   const [loadDialogOpen, setLoadDialogOpen] = useState(false);
   const [profileName, setProfileName] = useState('');
 
+  // Auto-Config target settings
+  const [targetMode, setTargetMode] = useState<'reg' | 'remainders' | 'hit' | 'hot_hit' | 'cold_hit' | 'filtered'>('hit');
+  const [targetMinRange, setTargetMinRange] = useState(3);
+  const [targetMaxRange, setTargetMaxRange] = useState(7);
+  const [remainderMin, setRemainderMin] = useState(15);
+  const [remainderMax, setRemainderMax] = useState(25);
+  const [lastRunData, setLastRunData] = useState<any>(null);
+
   // Load profiles from localStorage on mount
   useEffect(() => {
     try {
@@ -358,6 +366,11 @@ export default function Home() {
 
     let totalHits = 0;
     let totalExtras = 0; // Numbers kept but didn't hit
+    let totalRemainder = 0; // Numbers kept after filtering
+    let totalHotHits = 0; // Hits from kept numbers
+    let totalColdHits = 0; // Hits that were filtered out
+    let totalFiltered = 0; // Numbers removed by filter
+    let inRangeCount = 0; // Times hits were in target range
 
     for (let i = 1; i <= gamesToTest; i++) {
       const predictionGames = games.slice(i);
@@ -365,21 +378,73 @@ export default function Home() {
 
       const playable = applyFilters(predictionGames, rules, maxNumbers);
       const playableSet = new Set(playable);
+      const allNums = new Set(Array.from({ length: 80 }, (_, n) => n + 1));
 
+      // Calculate metrics
       const hits = targetGame.numbers.filter((num) => playableSet.has(num)).length;
+      const hitNumbers = targetGame.numbers.filter((num) => playableSet.has(num));
+      const filteredHits = targetGame.numbers.filter((num) => !playableSet.has(num));
+
       totalHits += hits;
       totalExtras += playable.length - hits;
+      totalRemainder += playable.length;
+      totalHotHits += hitNumbers.length;
+      totalColdHits += filteredHits.length;
+      totalFiltered += 80 - playable.length;
+
+      // Check if hits are in target range
+      if (hits >= targetMinRange && hits <= targetMaxRange) {
+        inRangeCount++;
+      }
     }
 
     const avgHits = totalHits / gamesToTest;
     const avgExtras = totalExtras / gamesToTest;
+    const avgRemainder = totalRemainder / gamesToTest;
+    const rangeHitRate = inRangeCount / gamesToTest;
 
-    // Score: Maximize hits, minimize extras
-    // Weight hits higher (2x) than penalty for extras
+    // Calculate score based on target mode
+    let score = 0;
+
+    switch (targetMode) {
+      case 'reg':
+        // Regular mode: maximize hits, minimize extras (1-80 all numbers)
+        score = avgHits * 2 - avgExtras * 0.5;
+        break;
+      case 'remainders':
+        // Target specific remainder range
+        const remainderScore = avgRemainder >= remainderMin && avgRemainder <= remainderMax ? 10 : 0;
+        score = avgHits * 1.5 + remainderScore - avgExtras * 0.3;
+        break;
+      case 'hit':
+        // Target specific hit range (from 20 drawn)
+        score = rangeHitRate * 10 + avgHits - Math.abs(avgHits - (targetMinRange + targetMaxRange) / 2) * 2;
+        break;
+      case 'hot_hit':
+        // Maximize hits from remainders (hot hits)
+        score = (totalHotHits / gamesToTest) * 3 - avgExtras * 0.2;
+        break;
+      case 'cold_hit':
+        // Minimize filtered out hits (cold hits = bad)
+        score = avgHits * 2 - (totalColdHits / gamesToTest) * 3 - avgExtras * 0.5;
+        break;
+      case 'filtered':
+        // Target specific filtered count
+        const avgFiltered = totalFiltered / gamesToTest;
+        const inFilterRange = avgFiltered >= remainderMin && avgFiltered <= remainderMax ? 10 : 0;
+        score = avgHits + inFilterRange - avgExtras * 0.3;
+        break;
+    }
+
     return {
-      score: avgHits * 2 - avgExtras * 0.5,
+      score,
       avgHits,
       avgExtras,
+      avgRemainder,
+      avgHotHits: totalHotHits / gamesToTest,
+      avgColdHits: totalColdHits / gamesToTest,
+      avgFiltered: totalFiltered / gamesToTest,
+      rangeHitRate,
     };
   };
 
@@ -625,6 +690,162 @@ export default function Home() {
     setLoadDialogOpen(false);
   };
 
+  // Export results to CSV
+  const exportToCSV = (results: DetailedStats) => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    const filename = `keno_analysis_${timestamp}.csv`;
+
+    // Build CSV content
+    const rows = [
+      // Header info
+      ['LAST DANCE KENO ANALYSIS REPORT'],
+      [`Generated: ${new Date().toLocaleString()}`],
+      [`Strategy: ${STRATEGIES[selectedStrategy]?.name || 'Custom'}`],
+      [],
+      // Summary stats
+      ['SUMMARY STATISTICS'],
+      ['Total Games Analyzed', results.totalGames],
+      ['Errors', results.errors ? 'Yes' : 'No'],
+      ['Playable Numbers', results.playableCount],
+      ['Eliminated Numbers', results.eliminatedCount],
+      ['Average Hits Per Game', results.avgHitsPerGame.toFixed(2)],
+      ['Total Hits', results.totalHits],
+      ['Total Misses', results.totalMisses],
+      ['Hit Rate', `${((results.avgHitsPerGame / 20) * 100).toFixed(2)}%`],
+      [],
+      // Spot counts
+      ['SPOT COUNTS'],
+      ['Spot', 'Total Hits', 'Per Game', 'Hit Rate %'],
+      ['10 Spot', results.spotCounts.tenSpot, (results.spotCounts.tenSpot / results.totalGames).toFixed(2), ((results.spotCounts.tenSpot / results.totalGames) * 10).toFixed(2)],
+      ['8 Spot', results.spotCounts.eightSpot, (results.spotCounts.eightSpot / results.totalGames).toFixed(2), ((results.spotCounts.eightSpot / results.totalGames) * 12.5).toFixed(2)],
+      ['5 Spot', results.spotCounts.fiveSpot, (results.spotCounts.fiveSpot / results.totalGames).toFixed(2), ((results.spotCounts.fiveSpot / results.totalGames) * 20).toFixed(2)],
+      ['3 Spot', results.spotCounts.threeSpot, (results.spotCounts.threeSpot / results.totalGames).toFixed(2), ((results.spotCounts.threeSpot / results.totalGames) * 33.33).toFixed(2)],
+      [],
+      // Remaining filtered no hit
+      ['MISSED NUMBERS'],
+      ['Filtered Numbers That Did Not Hit (Avg Per Game)', results.remainingFilteredNoHit],
+      [],
+      // Per-filter stats
+      ['PER-FILTER STATISTICS'],
+      ['Filter Name', 'Kept (Avg)', 'Removed (Avg)', 'Total Hits', 'Total Missed'],
+      ...results.perFilterStats.map(s => [
+        s.filterName,
+        s.keptCount,
+        s.removedCount,
+        s.hitCount,
+        s.hitRemovedCount,
+      ]),
+      [],
+      // Percentiles
+      ['FILTER PERCENTILES (vs other configs)'],
+      ['Filter', 'Hit Percentile', 'Spare Percentile'],
+      ...results.percentiles.map(p => {
+        const filterName = currentFilters.find(f => f.id === p.filterId)?.name || p.filterId;
+        return [filterName, `${p.hitPercentile}%`, `${p.sparePercentile}%`];
+      }),
+      [],
+      // Cross-strategy comparison
+      ['CROSS-STRATEGY COMPARISON'],
+      ['Strategy', 'Hit Percentile', 'Spare Percentile', 'Combined'],
+      ...results.crossStrategyPercentiles.map(s => [
+        s.strategyName,
+        `${s.hitPercentile}%`,
+        `${s.sparePercentile}%`,
+        `${Math.round((s.hitPercentile + s.sparePercentile) / 2)}%`,
+      ]),
+    ];
+
+    // Convert to CSV string
+    const csvContent = rows.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+
+    // Create and download file
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Save CSV to server (Saves folder)
+  const saveCSVToServer = async (results: DetailedStats) => {
+    try {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+      const filename = `keno_analysis_${timestamp}.csv`;
+
+      // Build CSV content
+      const rows = [
+        ['LAST DANCE KENO ANALYSIS REPORT'],
+        [`Generated: ${new Date().toLocaleString()}`],
+        [`Strategy: ${STRATEGIES[selectedStrategy]?.name || 'Custom'}`],
+        [],
+        ['SUMMARY STATISTICS'],
+        ['Total Games Analyzed', results.totalGames],
+        ['Errors', results.errors ? 'Yes' : 'No'],
+        ['Playable Numbers', results.playableCount],
+        ['Eliminated Numbers', results.eliminatedCount],
+        ['Average Hits Per Game', results.avgHitsPerGame.toFixed(2)],
+        ['Total Hits', results.totalHits],
+        ['Total Misses', results.totalMisses],
+        ['Hit Rate', `${((results.avgHitsPerGame / 20) * 100).toFixed(2)}%`],
+        [],
+        ['SPOT COUNTS'],
+        ['Spot', 'Total Hits', 'Per Game', 'Hit Rate %'],
+        ['10 Spot', results.spotCounts.tenSpot, (results.spotCounts.tenSpot / results.totalGames).toFixed(2), ((results.spotCounts.tenSpot / results.totalGames) * 10).toFixed(2)],
+        ['8 Spot', results.spotCounts.eightSpot, (results.spotCounts.eightSpot / results.totalGames).toFixed(2), ((results.spotCounts.eightSpot / results.totalGames) * 12.5).toFixed(2)],
+        ['5 Spot', results.spotCounts.fiveSpot, (results.spotCounts.fiveSpot / results.totalGames).toFixed(2), ((results.spotCounts.fiveSpot / results.totalGames) * 20).toFixed(2)],
+        ['3 Spot', results.spotCounts.threeSpot, (results.spotCounts.threeSpot / results.totalGames).toFixed(2), ((results.spotCounts.threeSpot / results.totalGames) * 33.33).toFixed(2)],
+        [],
+        ['MISSED NUMBERS'],
+        ['Filtered Numbers That Did Not Hit (Avg Per Game)', results.remainingFilteredNoHit],
+        [],
+        ['PER-FILTER STATISTICS'],
+        ['Filter Name', 'Kept (Avg)', 'Removed (Avg)', 'Total Hits', 'Total Missed'],
+        ...results.perFilterStats.map(s => [s.filterName, s.keptCount, s.removedCount, s.hitCount, s.hitRemovedCount]),
+        [],
+        ['FILTER PERCENTILES'],
+        ['Filter', 'Hit Percentile', 'Spare Percentile'],
+        ...results.percentiles.map(p => {
+          const filterName = currentFilters.find(f => f.id === p.filterId)?.name || p.filterId;
+          return [filterName, `${p.hitPercentile}%`, `${p.sparePercentile}%`];
+        }),
+        [],
+        ['CROSS-STRATEGY COMPARISON'],
+        ['Strategy', 'Hit Percentile', 'Spare Percentile', 'Combined'],
+        ...results.crossStrategyPercentiles.map(s => [s.strategyName, `${s.hitPercentile}%`, `${s.sparePercentile}%`, `${Math.round((s.hitPercentile + s.sparePercentile) / 2)}%`]),
+      ];
+
+      const csvContent = rows.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+
+      // Save to server via API
+      await fetch('/api/save-csv', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename, content: csvContent }),
+      });
+
+      console.log(`CSV saved to server: ${filename}`);
+    } catch (error) {
+      console.error('Failed to save CSV to server:', error);
+    }
+  };
+
+  // Load Pocket Profile (just strategy + filter states)
+  const loadPocketProfile = (profile: PocketProfile) => {
+    setSelectedStrategy(profile.strategy);
+
+    // Apply filter states to custom filters
+    if (profile.strategy === 'custom') {
+      setCustomFilters(prev => prev.map(f => ({
+        ...f,
+        enabled: profile.filterStates[f.id] ?? f.enabled,
+      })));
+    }
+
+    setLoadDialogOpen(false);
+  };
+
   // Delete profile
   const deleteMasterProfile = (name: string) => {
     const updated = masterProfiles.filter(p => p.name !== name);
@@ -788,7 +1009,7 @@ export default function Home() {
         sparePercentile: Math.floor(Math.random() * 100),
       }));
 
-      setRunResults({
+      const results = {
         totalGames: gamesToTest,
         errors: false,
         playableCount: playableNumbers.length,
@@ -806,7 +1027,31 @@ export default function Home() {
         remainingFilteredNoHit: Math.round(remainingFilteredNoHit / gamesToTest),
         percentiles,
         crossStrategyPercentiles,
-      });
+      };
+
+      setRunResults(results);
+      setLastRunData(results);
+
+      // Auto-save CSV to server
+      saveCSVToServer(results);
+    } catch (error) {
+      const errorResults = {
+        totalGames: 0,
+        errors: true,
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+        playableCount: 0,
+        eliminatedCount: 0,
+        perFilterStats: [],
+        totalHits: 0,
+        totalMisses: 0,
+        avgHitsPerGame: 0,
+        spotCounts: { tenSpot: 0, eightSpot: 0, fiveSpot: 0, threeSpot: 0 },
+        remainingFilteredNoHit: 0,
+        percentiles: [],
+        crossStrategyPercentiles: [],
+      };
+      setRunResults(errorResults);
+      setLastRunData(errorResults);
     } catch (error) {
       setRunResults({
         totalGames: 0,
@@ -1168,24 +1413,156 @@ export default function Home() {
               />
             </div>
 
-            <Button
-              onClick={runAutoConfig}
-              disabled={autoConfigRunning}
-              variant="outline"
-              className="mt-4 border-purple-500 text-purple-400 hover:bg-purple-500/20"
-            >
-              {autoConfigRunning ? (
-                <>
-                  <RefreshCwIcon className="w-4 h-4 mr-2 animate-spin" />
-                  {autoConfigProgress || 'Auto-Config...'}
-                </>
-              ) : (
-                <>
-                  <TrendingUpIcon className="w-4 h-4 mr-2" />
-                  Auto-Config
-                </>
-              )}
-            </Button>
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button
+                  disabled={autoConfigRunning}
+                  variant="outline"
+                  className="mt-4 border-purple-500 text-purple-400 hover:bg-purple-500/20"
+                >
+                  {autoConfigRunning ? (
+                    <>
+                      <RefreshCwIcon className="w-4 h-4 mr-2 animate-spin" />
+                      {autoConfigProgress || 'Auto-Config...'}
+                    </>
+                  ) : (
+                    <>
+                      <TrendingUpIcon className="w-4 h-4 mr-2" />
+                      Auto-Config
+                    </>
+                  )}
+                </Button>
+              </DialogTrigger>
+              <DialogContent className={`${currentTheme.card} ${currentTheme.border} border max-w-2xl`}>
+                <DialogHeader>
+                  <DialogTitle>Auto-Config Target Settings</DialogTitle>
+                  <DialogDescription>Set optimization targets for automatic filter configuration</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-6 py-4">
+                  {/* Target Mode Selector */}
+                  <div>
+                    <Label className="text-sm font-semibold mb-2 block">Target Mode</Label>
+                    <Select value={targetMode} onValueChange={(v: any) => setTargetMode(v)}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="reg">📊 Reg (1-80) - All numbers, maximize hits</SelectItem>
+                        <SelectItem value="remainders">🎯 Remainders - Keep specific count after filtering</SelectItem>
+                        <SelectItem value="hit">🎯 Hit Range - Target specific hit count from 20 drawn</SelectItem>
+                        <SelectItem value="hot_hit">🔥 Hot Hit - Maximize hits from kept numbers</SelectItem>
+                        <SelectItem value="cold_hit">❄️ Cold Hit - Minimize filtered out hits</SelectItem>
+                        <SelectItem value="filtered">🗑️ Filtered - Target specific numbers removed</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className={`text-xs ${currentTheme.muted} mt-2`}>
+                      {targetMode === 'reg' && 'Standard mode: maximize hits while minimizing extras from all 80 numbers'}
+                      {targetMode === 'remainders' && `Target: Keep ${remainderMin}-${remainderMax} numbers after filtering`}
+                      {targetMode === 'hit' && `Target: Hit ${targetMinRange}-${targetMaxRange} numbers from the 20 drawn`}
+                      {targetMode === 'hot_hit' && 'Target: Maximize hits that come from your kept (remainder) numbers'}
+                      {targetMode === 'cold_hit' && 'Target: Minimize hits that were filtered out (avoid filtering winners)'}
+                      {targetMode === 'filtered' && `Target: Filter out ${remainderMin}-${remainderMax} numbers`}
+                    </p>
+                  </div>
+
+                  {/* Hit Range Sliders */}
+                  {(targetMode === 'hit' || targetMode === 'hot_hit' || targetMode === 'cold_hit') && (
+                    <div className="space-y-4">
+                      <div>
+                        <div className="flex justify-between mb-1">
+                          <Label className="text-sm">Target Hit Range</Label>
+                          <span className={`text-sm ${currentTheme.muted}`}>{targetMinRange} - {targetMaxRange} hits</span>
+                        </div>
+                        <div className="flex gap-4">
+                          <div className="flex-1">
+                            <Label className="text-xs">Min Hits</Label>
+                            <Slider
+                              value={[targetMinRange]}
+                              onValueChange={([v]) => setTargetMinRange(v)}
+                              min={0}
+                              max={15}
+                              step={1}
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <Label className="text-xs">Max Hits</Label>
+                            <Slider
+                              value={[targetMaxRange]}
+                              onValueChange={([v]) => setTargetMaxRange(v)}
+                              min={1}
+                              max={20}
+                              step={1}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Remainder/Filtered Range Sliders */}
+                  {(targetMode === 'remainders' || targetMode === 'filtered') && (
+                    <div className="space-y-4">
+                      <div>
+                        <div className="flex justify-between mb-1">
+                          <Label className="text-sm">{targetMode === 'remainders' ? 'Remainder Range' : 'Filtered Count Range'}</Label>
+                          <span className={`text-sm ${currentTheme.muted}`}>{remainderMin} - {remainderMax} numbers</span>
+                        </div>
+                        <div className="flex gap-4">
+                          <div className="flex-1">
+                            <Label className="text-xs">Min</Label>
+                            <Slider
+                              value={[remainderMin]}
+                              onValueChange={([v]) => setRemainderMin(v)}
+                              min={5}
+                              max={40}
+                              step={1}
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <Label className="text-xs">Max</Label>
+                            <Slider
+                              value={[remainderMax]}
+                              onValueChange={([v]) => setRemainderMax(v)}
+                              min={10}
+                              max={60}
+                              step={1}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Legend */}
+                  <div className={`p-3 rounded-lg ${currentTheme.border} border text-xs space-y-1`}>
+                    <div><strong>Reg (1-80):</strong> All 80 numbers in play</div>
+                    <div><strong>Remainders:</strong> Numbers left after filters are applied</div>
+                    <div><strong>Hit:</strong> Numbers drawn in the game (20 total)</div>
+                    <div><strong>Hot Hit:</strong> Hit that was in your remainders (good!)</div>
+                    <div><strong>Cold Hit:</strong> Hit that was filtered out (bad!)</div>
+                    <div><strong>Filtered:</strong> Numbers removed by your filters</div>
+                  </div>
+
+                  <Button
+                    onClick={runAutoConfig}
+                    disabled={autoConfigRunning}
+                    className="w-full bg-purple-600 hover:bg-purple-700"
+                  >
+                    {autoConfigRunning ? (
+                      <>
+                        <RefreshCwIcon className="w-4 h-4 mr-2 animate-spin" />
+                        {autoConfigProgress || 'Running...'}
+                      </>
+                    ) : (
+                      <>
+                        <PlayIcon className="w-4 h-4 mr-2" />
+                        Run Auto-Config
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
 
             <Button
               onClick={runAnalysis}
@@ -1489,10 +1866,21 @@ export default function Home() {
             {runResults && (
               <Card className={`${currentTheme.card} ${currentTheme.border} border`}>
                 <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <BarChart3Icon className="w-5 h-5" />
-                    Analysis Results
-                  </CardTitle>
+                  <div className="flex justify-between items-center">
+                    <CardTitle className="flex items-center gap-2">
+                      <BarChart3Icon className="w-5 h-5" />
+                      Analysis Results
+                    </CardTitle>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => lastRunData && exportToCSV(lastRunData)}
+                      className="border-green-500 text-green-400 hover:bg-green-500/20"
+                    >
+                      <DownloadIcon className="w-4 h-4 mr-2" />
+                      Download CSV
+                    </Button>
+                  </div>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   {/* Overview */}
