@@ -219,6 +219,8 @@ interface DetailedStats {
     threeSpot: number; // Hits from top 3
   };
   remainingFilteredNoHit: number; // Numbers kept but didn't hit
+  coldHits: number; // Numbers filtered out that DID hit (KILLERS)
+  avgRemainderSize: number; // Average pool size
   percentiles: {
     filterId: string;
     hitPercentile: number;
@@ -274,12 +276,12 @@ export default function Home() {
   const [loadDialogOpen, setLoadDialogOpen] = useState(false);
   const [profileName, setProfileName] = useState('');
 
-  // Auto-Config target settings
-  const [targetMode, setTargetMode] = useState<'reg' | 'remainders' | 'hit' | 'hot_hit' | 'cold_hit' | 'filtered'>('hit');
-  const [targetMinRange, setTargetMinRange] = useState(3);
-  const [targetMaxRange, setTargetMaxRange] = useState(7);
-  const [remainderMin, setRemainderMin] = useState(15);
-  const [remainderMax, setRemainderMax] = useState(25);
+  // Auto-Config target settings - DEFAULT: Cold Hit mode (minimize filtered winners)
+  const [targetMode, setTargetMode] = useState<'reg' | 'remainders' | 'hit' | 'hot_hit' | 'cold_hit' | 'filtered'>('cold_hit');
+  const [targetMinRange, setTargetMinRange] = useState(8);
+  const [targetMaxRange, setTargetMaxRange] = useState(15);
+  const [remainderMin, setRemainderMin] = useState(10);
+  const [remainderMax, setRemainderMax] = useState(20);
   const [lastRunData, setLastRunData] = useState<any>(null);
 
   // Load profiles from localStorage on mount
@@ -404,35 +406,43 @@ export default function Home() {
     const rangeHitRate = inRangeCount / gamesToTest;
 
     // Calculate score based on target mode
+    // GOAL: Hit 5/5, 7/7, 8/8, or 10/10 - means ZERO cold hits, small pool
     let score = 0;
+
+    // Jackpot scoring: heavily penalize cold hits, keep pool small
+    const coldHitPenalty = (totalColdHits / gamesToTest) * 10; // HEAVY penalty for filtering winners
+    const poolSizeBonus = avgRemainder <= 20 ? 5 : avgRemainder <= 25 ? 2 : 0; // Bonus for small pools
+    const coldHitGoal = totalColdHits === 0 ? 20 : totalColdHits <= (gamesToTest * 0.05) ? 10 : 0; // Big bonus for zero/low cold hits
 
     switch (targetMode) {
       case 'reg':
         // Regular mode: maximize hits, minimize extras (1-80 all numbers)
-        score = avgHits * 2 - avgExtras * 0.5;
+        score = avgHits * 2 - avgExtras * 0.5 - coldHitPenalty;
         break;
       case 'remainders':
-        // Target specific remainder range
-        const remainderScore = avgRemainder >= remainderMin && avgRemainder <= remainderMax ? 10 : 0;
-        score = avgHits * 1.5 + remainderScore - avgExtras * 0.3;
+        // Target specific remainder range (default 10-20 for jackpot plays)
+        const remainderScore = avgRemainder >= remainderMin && avgRemainder <= remainderMax ? 15 : 0;
+        score = avgHits * 2 + remainderScore + poolSizeBonus - coldHitPenalty + coldHitGoal;
         break;
       case 'hit':
-        // Target specific hit range (from 20 drawn)
-        score = rangeHitRate * 10 + avgHits - Math.abs(avgHits - (targetMinRange + targetMaxRange) / 2) * 2;
+        // Target specific hit range (from 20 drawn) - aiming high 8-15
+        score = rangeHitRate * 15 + avgHits * 2 - Math.abs(avgHits - (targetMinRange + targetMaxRange) / 2) * 3 - coldHitPenalty;
         break;
       case 'hot_hit':
-        // Maximize hits from remainders (hot hits)
-        score = (totalHotHits / gamesToTest) * 3 - avgExtras * 0.2;
+        // Maximize hits from remainders (hot hits) - this is the JACKPOT metric
+        const hotHitRate = totalHotHits / gamesToTest;
+        score = hotHitRate * 10 - coldHitPenalty + coldHitGoal + poolSizeBonus;
         break;
       case 'cold_hit':
-        // Minimize filtered out hits (cold hits = bad)
-        score = avgHits * 2 - (totalColdHits / gamesToTest) * 3 - avgExtras * 0.5;
+        // Minimize filtered out hits (cold hits = KILLERS) - DEFAULT MODE
+        // Zero cold hits = huge bonus, each cold hit = massive penalty
+        score = avgHits * 2 + coldHitGoal - coldHitPenalty + poolSizeBonus - avgExtras * 0.3;
         break;
       case 'filtered':
         // Target specific filtered count
         const avgFiltered = totalFiltered / gamesToTest;
         const inFilterRange = avgFiltered >= remainderMin && avgFiltered <= remainderMax ? 10 : 0;
-        score = avgHits + inFilterRange - avgExtras * 0.3;
+        score = avgHits + inFilterRange + coldHitGoal - coldHitPenalty - avgExtras * 0.3;
         break;
     }
 
@@ -445,6 +455,9 @@ export default function Home() {
       avgColdHits: totalColdHits / gamesToTest,
       avgFiltered: totalFiltered / gamesToTest,
       rangeHitRate,
+      coldHitPenalty,
+      poolSizeBonus,
+      coldHitGoal,
     };
   };
 
@@ -800,6 +813,12 @@ export default function Home() {
         ['MISSED NUMBERS'],
         ['Filtered Numbers That Did Not Hit (Avg Per Game)', results.remainingFilteredNoHit],
         [],
+        ['COLD HITS - JACKPOT KILLER'],
+        ['Total Cold Hits (Filtered numbers that DID hit)', results.coldHits || 0],
+        ['Cold Hits Per Game', ((results.coldHits || 0) / results.totalGames).toFixed(2)],
+        ['Avg Pool Size', results.avgRemainderSize || 'N/A'],
+        ['Jackpot Ready?', (results.coldHits === 0 && (results.avgRemainderSize || 0) <= 20) ? 'YES ✅' : 'NO ❌'],
+        [],
         ['PER-FILTER STATISTICS'],
         ['Filter Name', 'Kept (Avg)', 'Removed (Avg)', 'Total Hits', 'Total Missed'],
         ...results.perFilterStats.map(s => [s.filterName, s.keptCount, s.removedCount, s.hitCount, s.hitRemovedCount]),
@@ -927,6 +946,8 @@ export default function Home() {
       let totalMisses = 0;
       const spotHits = { ten: 0, eight: 0, five: 0, three: 0 };
       let remainingFilteredNoHit = 0;
+      let totalColdHits = 0;
+      let totalPoolSize = 0;
 
       // Run analysis for each filter individually
       for (const filter of currentFilters.filter(f => f.enabled)) {
@@ -979,6 +1000,7 @@ export default function Home() {
         const hits = targetGame.numbers.filter((num) => playableSet.has(num));
         totalHits += hits.length;
         totalMisses += 20 - hits.length;
+        totalPoolSize += playable.length;
 
         // Spot counts
         const top10 = playable.slice(0, 10);
@@ -993,7 +1015,15 @@ export default function Home() {
 
         // Numbers kept but didn't hit
         remainingFilteredNoHit += playable.filter((n) => !targetGame.numbers.includes(n)).length;
+
+        // COLD HITS: Numbers that were filtered out but DID hit (KILLERS!)
+        const allNums = new Set(Array.from({ length: 80 }, (_, n) => n + 1));
+        playable.forEach(n => allNums.delete(n));
+        const coldHitsThisGame = targetGame.numbers.filter((n) => allNums.has(n)).length;
+        totalColdHits += coldHitsThisGame;
       }
+
+      const avgPoolSize = gamesToTest > 0 ? totalPoolSize / gamesToTest : 0;
 
       // Calculate percentiles (compare with other variations)
       const percentiles = currentFilters.map(f => ({
@@ -1025,6 +1055,8 @@ export default function Home() {
           threeSpot: spotHits.three,
         },
         remainingFilteredNoHit: Math.round(remainingFilteredNoHit / gamesToTest),
+        coldHits: totalColdHits,
+        avgRemainderSize: Math.round(avgPoolSize),
         percentiles,
         crossStrategyPercentiles,
       };
@@ -1047,13 +1079,19 @@ export default function Home() {
         avgHitsPerGame: 0,
         spotCounts: { tenSpot: 0, eightSpot: 0, fiveSpot: 0, threeSpot: 0 },
         remainingFilteredNoHit: 0,
+        coldHits: 0,
+        avgRemainderSize: 0,
         percentiles: [],
         crossStrategyPercentiles: [],
       };
       setRunResults(errorResults);
       setLastRunData(errorResults);
-    } catch (error) {
-      setRunResults({
+    }
+
+    setRunning(false);
+  };
+
+  // Update filter
         totalGames: 0,
         errors: true,
         errorMessage: error instanceof Error ? error.message : 'Unknown error',
@@ -1928,6 +1966,36 @@ export default function Home() {
                         <div className={`text-xs ${currentTheme.muted}`}>{((runResults.spotCounts.threeSpot / runResults.totalGames) * 33.3).toFixed(1)}% hit rate</div>
                       </div>
                     </div>
+                  </div>
+
+                  {/* COLD HITS - The most important metric for jackpot */}
+                  <div className={`p-4 rounded-lg ${currentTheme.border} border ${runResults.coldHits === 0 ? 'bg-green-900/30' : runResults.coldHits <= 5 ? 'bg-amber-900/30' : 'bg-red-900/30'}`}>
+                    <h3 className="font-semibold mb-2 flex items-center gap-2">
+                      {runResults.coldHits === 0 ? '🎯 PERFECT!' : runResults.coldHits <= 5 ? '⚠️ Warning' : '❌ Too Many'} - COLD HITS (Filtered Winners)
+                    </h3>
+                    <div className="flex items-center gap-4">
+                      <div className="text-3xl font-bold">{runResults.coldHits}</div>
+                      <div className={`text-sm ${currentTheme.muted}`}>
+                        Numbers you filtered out that actually hit<br/>
+                        <span className={runResults.coldHits === 0 ? 'text-green-400' : ''}>Goal: ZERO cold hits for 5/5, 7/7, 8/8, 10/10</span>
+                      </div>
+                    </div>
+                    {runResults.avgRemainderSize !== undefined && (
+                      <div className={`mt-3 pt-3 border-t ${currentTheme.border}`}>
+                        <div className="flex justify-between text-sm">
+                          <span className={currentTheme.muted}>Avg Pool Size:</span>
+                          <span className={runResults.avgRemainderSize <= 20 ? 'text-green-400 font-bold' : 'text-amber-400'}>
+                            {runResults.avgRemainderSize} numbers
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm mt-1">
+                          <span className={currentTheme.muted}>Jackpot Ready?</span>
+                          <span className={runResults.coldHits === 0 && runResults.avgRemainderSize <= 20 ? 'text-green-400 font-bold' : 'text-red-400'}>
+                            {runResults.coldHits === 0 && runResults.avgRemainderSize <= 20 ? 'YES ✅' : 'NO ❌'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Per-Filter Stats */}
